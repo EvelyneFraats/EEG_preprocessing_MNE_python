@@ -1,0 +1,277 @@
+# EEG data preprocessing script using MNE packages in python (https://mne.tools/stable/index.html)
+# author: Evelyne Fraats (evelyne.fraats@student.uva.nl)
+
+##Install packages
+import os
+import numpy as np
+import mne  #MNE - https://mne.tools/stable/install/mne_python.html
+import pooch  
+from mne.io import concatenate_raws, read_raw_fif
+import mne.viz
+from os import walk
+from statistics import mean
+import pandas as pd
+from mne.defaults import HEAD_SIZE_DEFAULT
+from mne.channels._standard_montage_utils import _read_theta_phi_in_degrees
+
+## Loading data from local pc
+
+#ask for participant ID and condition
+participant_id = input('Enter participant ID - 5letters:') #my participant were 5 letters
+condition = input('Enter condition - action, object, fixation:') #in my experiment I had three different task; an action, object and fixation task
+                  
+###Define data path
+data_path = '/home/c12169374/EEG DATA/' + participant_id + '/raw/' + participant_id + '_' + condition + '.bdf' #my imported files were bdf files from Biosemi software
+
+###Load data
+raw = mne.io.read_raw_bdf(data_path, eog = ['Left', 'Righ', 'Up', 'Down'], preload = True) #I had four EOG electrodes with specific location names
+
+###Drop channels
+
+#drop extra channels which are not used, in my case I did not use two external electrodes
+raw.drop_channels(['EXG7', 'EXG8'])
+
+###Print raw info
+
+print(raw)
+print(raw.info)
+
+###Plot raw data
+raw.plot_psd(fmax=60) #here also plot the mastoids (external electrodes, therefore there are 2 extra electrodes instead of the 64 electrodes) 
+ 
+####plot part raw sensor traces - events
+raw.plot(duration=20.0, start = 450.0, n_channels= 68, bad_color = 'darkblue', title = 'Raw plot unprocessed') 
+
+###visualize all sensors. Computational heavy!
+raw.plot(duration=len(raw), n_channels= len(raw.ch_names)) 
+
+## Reference signal
+
+raw_ref = raw.set_eeg_reference(ref_channels = ['Mlef', 'Mrig'])
+
+###visualize ref data
+raw_ref.plot(duration=20.0, start = 450.0, n_channels= 68, bad_color = 'darkblue', title = 'Raw plot unprocessed') 
+
+## Add montage location file 
+# I manually look op the location of my electrodes because I had changed the location of the frontal electrodes to !1 and I2 and could not use the standard biosemi montage
+
+DATA = """
+Fp1	-92	-72
+AF7	-92	-54
+AF3	-74	-65
+F1	-50	-68
+F3	-60	-51
+F5	-115 72
+F7	-92	-36
+FT7	-92	-18
+FC5	-72	-21
+FC3	-50	-28
+FC1	-32	-45
+C1	-23	0
+C3	-46	0
+C5	-69	0
+T7	-92	0
+TP7	-92	18
+CP5	-72	21
+CP3	-50	28
+CP1	-32	45
+P1	-50	68
+P3	-60	51
+P5	-75	41
+P7	-92	36
+P9	-115	36
+PO7	-92	54
+PO3	-74	65
+O1	-92	72
+Iz	115	-90
+Oz	92	-90
+POz	69	-90
+Pz	46	-90
+CPz	23	-90
+Fpz	92	90
+Fp2	92	72
+AF8	92	54
+AF4	74	65
+AFz	69	90
+Fz	46	90
+F2	50	68
+F4	60	51
+F6	115	-72
+F8	92	36
+FT8	92	18
+FC6	72	21
+FC4	50	28
+FC2	32	45
+FCz	23	90
+Cz	0	0
+C2	23	0
+C4	46	0
+C6	69	0
+T8	92	0
+TP8	92	-18
+CP6	72	-21
+CP4	50	-28
+CP2	32	-45
+P2	50	-68
+P4	60	-51
+P6	75	-41
+P8	92	-36
+P10	115	-36
+PO8	92	-54
+PO4	74	-65
+O2	92	-72
+Nz	 115	 90
+LPA	-115	  0
+RPA	 115	  0
+"""
+
+###set montage file
+fname = 'chs.tsv' #found in repro
+with open(fname, 'w') as fout:
+    fout.write(DATA)
+montage = _read_theta_phi_in_degrees(fname=fname, head_size=HEAD_SIZE_DEFAULT,
+                                     fid_names=['Nz', 'LPA', 'RPA'],
+                                     add_fiducials=False)
+
+###change the external electrode to non EEG type. (I choosed a random type, did not matter for responses since I already references the data)
+raw_ref.set_channel_types({'Mlef': 'emg', 'Mrig': 'emg'})
+
+###apply montage
+raw_ref.set_montage(montage)
+
+####visualize sensors
+raw_ref.plot_sensors(show_names = True)
+
+
+## Filter signal
+
+###Set value
+lowpass_freq = 35
+highpass_freq = 0.1
+freqs_1 = (50) # I also applied two notch filter on 50 and 60 Hz_
+freqs_2 = (60) 
+
+###apply filters
+raw_filtered = raw_ref.filter(l_freq = highpass_freq, h_freq = lowpass_freq)
+raw_filtered_notch = raw_filtered.notch_filter(freqs = freqs_1) 
+raw_filtered_notch_two = raw_filtered_notch.notch_filter(freqs = freqs_2) 
+
+####plot filtered singal
+raw_filtered_notch_two.plot(duration=20.0, start = 450, n_channels= 68, bad_color = 'blue', title = 'Raw plot referenced & filtered') 
+raw_filtered_notch_two.plot_psd(fmax = 60)
+
+## Extract events
+
+### extract events
+events = mne.find_events(raw_filtered_notch_two, stim_channel='Status')
+
+###show first 5 events
+print(events[:5])
+    
+###define dict #in my experiment I had 60 images labeled with a four digit trigger number in my Status channel.
+event_dict = { 'indoor0156' : 4033, 'indoor0282' : 3852, 'indoor0270' : 4064, 'indoor0272' : 4007, 'indoor0066' : 4023, 'indoor0283' : 3898, 'indoor0214' : 3953, 'indoor0080' : 4055, 'indoor0215' : 3964, 'indoor0216': 3931, 'indoor0146' : 4074, 'indoor0221' : 4045, 'indoor0235': 4071, 'indoor0212' : 3960, 'indoor0058' : 4047, 'indoor0145' : 3989, 'indoor0136' : 4018, 'indoor0130' : 4088, 'indoor0163' : 3894, 'indoor0103': 4017,'indoor0100' : 3842, 'indoor0055' : 3858, 'indoor0021' : 3888, 'indoor0266': 3853, 'indoor0025' : 4062, 'indoor0279' : 4027, 'indoor0281' : 3873, 'indoor0271' : 4014, 'indoor0249' : 4002, 'indoor0033' : 4085, 'outdoornatural0010' : 4020, 'outdoornatural0009' : 3981, 'outdoornatural0049' : 3942, 'outdoornatural0008' : 3903, 'outdoornatural0052' : 4076, 'outdoornatural0050' : 4072, 'outdoornatural0132' : 3914, 'outdoornatural0053' : 3930, 'outdoornatural0004' : 3984, 'outdoornatural0207' : 3997, 'outdoornatural0097' : 4003, 'outdoornatural0261' : 4056, 'outdoornatural0011' : 4075, 'outdoornatural0198' : 4063, 'outdoornatural0128' : 3971, 'outdoornatural0255' : 3955, 'outdoornatural0062' : 3925, 'outdoornatural0246' : 3994, 'outdoornatural0160' : 3940, 'outdoornatural0091' : 4030, 'outdoornatural0104' : 4000, 'outdoornatural0200' : 3902, 'outdoornatural0273' : 4043, 'outdoornatural0079' : 3944, 'outdoornatural0042' : 3986, 'outdoornatural0034' : 4061, 'outdoornatural0017' : 3950, 'outdoornatural0023' : 3859, 'outdoornatural0252' : 3870, 'outdoornatural0250' : 3884, 'outdoormanmade0167' : 4059, 'outdoormanmade0040' : 3851, 'outdoormanmade0110' : 3841, 'outdoormanmade0117' : 4077, 'outdoormanmade0030': 3891, 'outdoormanmade0258' : 4081, 'outdoormanmade0064' : 3926, 'outdoormanmade0068' : 4038, 'outdoormanmade0063' : 3845, 'outdoormanmade0015' : 3871, 'outdoormanmade0257': 4078, 'outdoormanmade0032' : 3878, 'outdoormanmade0256': 3918, 'outdoormanmade0220' : 4052, 'outdoormanmade0133' : 4013, 'outdoormanmade0119' : 3886, 'outdoormanmade0152' : 4001, 'outdoormanmade0148' : 4083, 'outdoormanmade0155' : 3899, 'outdoormanmade0157' : 3843, 'outdoormanmade0175' : 4048, 'outdoormanmade0173': 3907, 'outdoormanmade0089' : 3862, 'outdoormanmade0147': 4060, 'outdoormanmade0131' : 3874, 'outdoormanmade0161' : 3869, 'outdoormanmade0154' : 4041, 'outdoormanmade0165' : 3854, 'outdoormanmade0276': 3976, 'outdoormanmade0149' : 3866}
+
+## remove behavioural trials
+# in my experiment, I had several trials which were behavioural rated, which I wanted to be deleted. I upload a CSV file indicating if a certain image repetiton is repeated. 
+
+###Define path psychopy file
+data_path_psychopy = '/home/c12169374/EEG DATA/' + participant_id + '/psychopy folders/' +  participant_id + '_' + condition + "_index_behavior.csv"
+
+###load file
+with open(data_path_psychopy, newline = '') as f:
+      index_behaviour = np.loadtxt(data_path_psychopy, delimiter = ',')   
+
+###convert float to int
+index_behaviour_int = index_behaviour.astype(int)
+
+###remove extra saved trial 
+events_final = np.delete(events, sorted(index_behaviour_int, reverse = True), 0)
+
+###check length events
+print(len(events_final))
+
+
+## segment epochs
+
+###define reject criteria rough
+reject_criteria_rough = dict(eeg=500e-6)   # I did a rough epoch selection (peak-to-peak amplitude) on my epochs before ICA correction. 
+
+###define decim (orignal sampling rate/ desired sampling rate)
+decim = 2048/512
+
+###select epochs with rough rejection criteria
+epochs = mne.Epochs(raw_filtered_notch_two, events_final, tmin=-0.250, tmax=1,
+                    reject=reject_criteria_rough, decim = decim, baseline = None, preload=True, event_id = event_dict) 
+
+###examine number of epochs per event
+print(epochs)
+
+###epoch visualization
+epochs.average().plot()
+epochs.plot_image(picks = ['Oz'], title = 'epoch Oz before cleaning')
+
+## show EOG events
+
+eog_events = mne.preprocessing.find_eog_events(raw_filtered_notch_two, event_id = 998,thresh = 90e-6) #threshold can be changed
+eog_show = raw_filtered_notch_two.copy()
+eog_show.pick_types(eog = True)
+eog_show.plot(events = eog_events, event_id = {'EOG':998}, start = 150, duration = 10)
+
+## ICA; removal EOG artefacts
+
+reject_criteria_eog = dict(eog=250e-6)  
+
+###visualize EOG artifacts (nn whole data, not only in epochs)
+eog_epoch = mne.preprocessing.create_eog_epochs(raw_filtered_notch_two, reject = reject_criteria_eog, thresh = 90e-6)
+eog_evoked = eog_epoch.average() 
+eog_evoked.apply_baseline((None, None))
+eog_evoked.plot_joint()  
+
+###set up ICA
+ica = mne.preprocessing.ICA(n_components=0.99, max_iter = 10000, method = 'infomax', random_state=97).fit(epochs)
+
+###find which ICs match the EOG pattern
+ica.exclude = []
+eog_indices, eog_scores = ica.find_bads_eog(eog_epoch, threshold = 2.5)
+ica.exclude = eog_indices
+ica.plot_components(eog_indices)
+
+### Look at ICA components 
+ica.plot_scores(eog_scores) #ICA component cosen
+ica.plot_properties(epochs, picks=eog_indices)
+
+###apply ica to data
+ica.apply(epochs, exclude = eog_indices)
+
+## Epoch baseline correction
+
+### define baseline interval 
+inteval = (-0.250, 0)
+
+###baseline correction
+epochs_bc = epochs.apply_baseline(inteval)
+
+###visualize epoch
+epochs_bc.average().plot()
+epochs_bc.plot_image(picks = ['Oz'])
+
+## specific artifact regression
+
+### setting reject criteria
+reject_criteria_specific = dict(eeg=150e-6)    
+
+###drop epochs by rejecting criteria
+epochs_bc.drop_bad(reject=reject_criteria_specific)
+
+###examine number of epochs per event
+print(epochs_bc)
+
+###visualize epoch
+epochs_bc.average().plot()
+
+## convert Current source density
+epochs_bc_csd = mne.preprocessing.compute_current_source_density(epochs_bc)
+
+## visualize epochs
+epochs_bc_csd.plot_image(picks = ['P1'])
+
